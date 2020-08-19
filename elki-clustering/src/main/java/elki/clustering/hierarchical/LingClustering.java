@@ -207,7 +207,6 @@ public class LingClustering<O> implements ClusteringAlgorithm<Clustering<Dendrog
       }
       clustering.addToplevelCluster(cn);
     }
-    LOG.verbose("last rank " + r + " of " + rsfound.length);
     return clustering;
   }
 
