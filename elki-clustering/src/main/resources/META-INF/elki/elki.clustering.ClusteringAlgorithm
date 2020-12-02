@@ -6,6 +6,7 @@ elki.clustering.dbscan.GeneralizedDBSCAN
 elki.clustering.dbscan.parallel.ParallelGeneralizedDBSCAN
 elki.clustering.dbscan.GriDBSCAN
 elki.clustering.dbscan.LSDBC
+elki.clustering.dbscan.TIDBSCAN
 elki.clustering.em.EM
 elki.clustering.hierarchical.extraction.ClustersWithNoiseExtraction
 elki.clustering.hierarchical.extraction.HDBSCANHierarchyExtraction
