@@ -289,7 +289,7 @@ public class DBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       final boolean ismetric = distance.isMetric();
       for(DoubleDBIDListIter neighbor = neighbors.iter(); neighbor.valid(); neighbor.advance()) {
         if(processedIDs.add(neighbor)) {
-          // No need to query again if metric and distance 0.
+          // No need to query again if metric or distance 0.
           if(!ismetric || neighbor.doubleValue() > 0.) {
             seeds.add(neighbor);
           }
