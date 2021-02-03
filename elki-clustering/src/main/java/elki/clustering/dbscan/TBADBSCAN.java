@@ -105,11 +105,10 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
 
       // Calc ref points
       // TODO: Change which Points to use
-      //ModifiableDBIDs refPoints = DBIDUtil.randomSample(relation.getDBIDs(), nRefPoints, 55);
-      //DBIDVar refPoint = DBIDUtil.newVar();
+      ModifiableDBIDs refPoints = DBIDUtil.randomSample(relation.getDBIDs(), nRefPoints, 55);
+      DBIDVar refPoint = DBIDUtil.newVar();
       for(int i=0; i < nRefPoints; i++){
-        //refPoints.pop(refPoint);
-        DoubleVector refPoint = new DoubleVector(new double[] {0,0});
+        refPoints.pop(refPoint);
         generateSortedReferenceDistances(i, refPoint, relation);
         generateOffsetMap(i);
       }
@@ -252,14 +251,6 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
     protected void generateSortedReferenceDistances(int index, DBIDRef refPoint, Relation<O> relation){
       for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()){
         double dist = distanceQuery.distance(iditer, refPoint);
-        refDists[index].add(dist, iditer);
-      }
-      refDists[index].sort();
-    }
-
-    protected void generateSortedReferenceDistances(int index, DoubleVector refPoint, Relation<O> relation){
-      for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()){
-        double dist = distanceQuery.distance(iditer, (O) refPoint);
         refDists[index].add(dist, iditer);
       }
       refDists[index].sort();
