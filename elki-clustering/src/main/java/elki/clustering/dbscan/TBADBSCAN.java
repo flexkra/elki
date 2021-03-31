@@ -1,11 +1,10 @@
 package elki.clustering.dbscan;
 
-import com.sun.org.apache.xpath.internal.operations.Mod;
 import elki.Algorithm;
 import elki.clustering.ClusteringAlgorithm;
+import elki.clustering.kmeans.initialization.KMeansPlusPlus;
 import elki.data.Cluster;
 import elki.data.Clustering;
-import elki.data.DoubleVector;
 import elki.data.model.ClusterModel;
 import elki.data.model.Model;
 import elki.data.type.TypeInformation;
@@ -25,8 +24,10 @@ import elki.utilities.optionhandling.Parameterizer;
 import elki.utilities.optionhandling.constraints.CommonConstraints;
 import elki.utilities.optionhandling.parameterization.Parameterization;
 import elki.utilities.optionhandling.parameters.DoubleParameter;
+import elki.utilities.optionhandling.parameters.EnumParameter;
 import elki.utilities.optionhandling.parameters.IntParameter;
 import elki.utilities.optionhandling.parameters.ObjectParameter;
+import elki.utilities.random.RandomFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -38,13 +39,20 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
   protected double epsilon;
   protected int minpts;
   protected int nRefPoints;
+  public enum RefPointMode {
+    RANDOM,
+    KPP,
+    QUANTIL,
+  }
+  protected RefPointMode refPointMode;
 
-  public TBADBSCAN(Distance<? super O> distance, double epsilon, int minpts, int nRefPoints){
+  public TBADBSCAN(Distance<? super O> distance, double epsilon, int minpts, int nRefPoints, RefPointMode mode){
     super();
     this.distance = distance;
     this.epsilon = epsilon;
     this.minpts = minpts;
     this.nRefPoints = nRefPoints;
+    this.refPointMode = mode;
   }
 
   @Override
@@ -54,9 +62,24 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
 
   public Clustering<Model> run(Relation<O> relation){
     final int datasetSize = relation.size();
+    if(datasetSize < minpts) {
+      Clustering<Model> result = new Clustering<>();
+      Metadata.of(result).setLongName("TBA-DBSCAN Clustering");
+      result.addToplevelCluster(new Cluster<>(relation.getDBIDs(), true, ClusterModel.CLUSTER));
+      return result;
+    }
 
     Instance tbaDBSCAN = new Instance();
     tbaDBSCAN.run(relation);
+
+    /*double averagen = tbaDBSCAN.ncounter / (double) relation.size();
+    LOG.statistics(new DoubleStatistic(DBSCAN.class.getName() + ".average-neighbors", averagen));
+    if(averagen < 1 + 0.1 * (minpts - 1)) {
+      LOG.warning("There are very few neighbors found. Epsilon may be too small.");
+    }
+    if(averagen > 100 * minpts) {
+      LOG.warning("There are very many neighbors found. Epsilon may be too large.");
+    }*/
 
     Clustering<Model> result = new Clustering<>();
     Metadata.of(result).setLongName("TBA-DBSCAN Clustering");
@@ -76,43 +99,44 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
     protected DistanceQuery<? super O> distanceQuery;
     protected ModifiableDoubleDBIDList[] refDists;
     protected MapIntegerDBIDIntegerStore[] refDistsOffsetMap;
+    protected int nDistCalcs;
 
 
     protected void run(Relation<O> relation){
-      // Calc ref points
-      // Scan windows for noise
-      // continue
-
-      // setup meta
       final int size = relation.size();
       this.objprog = LOG.isVerbose() ? new FiniteProgress("Processing objects", size, LOG) : null;
       this.clusprog = LOG.isVerbose() ? new IndefiniteProgress("Number of clusters", LOG) : null;
+      this.distanceQuery = distance.instantiate(relation);
 
       // Instantiate necessary objects
-      distanceQuery = distance.instantiate(relation);
       resultList = new ArrayList<>();
       noise = DBIDUtil.newHashSet();
       processedIDs = DBIDUtil.newHashSet(size);
+      nDistCalcs = 0;
 
       //RefDistances
       refDists = new ModifiableDoubleDBIDList[nRefPoints];
       refDistsOffsetMap = new MapIntegerDBIDIntegerStore[nRefPoints];
-      //RefDistances initializing
       for(int i=0; i<nRefPoints; i++){
         refDists[i] = DBIDUtil.newDistanceDBIDList(relation.size());
         refDistsOffsetMap[i] = new MapIntegerDBIDIntegerStore(relation.size());
       }
 
       // Calc ref points
-      // TODO: Change which Points to use
-      ModifiableDBIDs refPoints = DBIDUtil.randomSample(relation.getDBIDs(), nRefPoints, 55);
-      DBIDVar refPoint = DBIDUtil.newVar();
-      for(int i=0; i < nRefPoints; i++){
-        refPoints.pop(refPoint);
-        generateSortedReferenceDistances(i, refPoint, relation);
-        generateOffsetMap(i);
+      switch (refPointMode){
+        case KPP:
+          generateKMPPRefPoints(relation);
+          break;
+        case RANDOM:
+          generateRandomRefPoints(relation);
+          break;
+        case QUANTIL:
+          generateQuantilRefPoints(relation);
+          break;
       }
+      LOG.warning("Ref Dist Calcs"+nDistCalcs);
 
+      long clustStart = System.currentTimeMillis();
       //Start Clustering here
       for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()){
         //cluster unprocessed data
@@ -120,7 +144,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           expandCluster(iditer, relation);
         }
 
-        //update Metadata
+        //Update Metadata
         if(objprog != null && clusprog != null) {
           objprog.setProcessed(processedIDs.size(), LOG);
           clusprog.setProcessed(resultList.size(), LOG);
@@ -129,11 +153,13 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           break;
         }
       }
+      long clustTime = System.currentTimeMillis() - clustStart;
+      LOG.warning("Ref Calc "+clustTime+"ms");
+      LOG.warning("Distance Calculations"+nDistCalcs);
       // Finish progress logging
       LOG.ensureCompleted(objprog);
       LOG.setCompleted(clusprog);
     }
-
 
     protected void expandCluster(DBIDRef startObjectID, Relation<O> relation){
       ArrayModifiableDBIDs seeds = DBIDUtil.newArray();
@@ -150,7 +176,6 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
 
       ModifiableDBIDs currentCluster = DBIDUtil.newArray(neighbors.size());
       currentCluster.add(startObjectID);
-
       processNeighbors(neighbors, currentCluster, seeds);
 
       DBIDVar o = DBIDUtil.newVar();
@@ -172,7 +197,6 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
             seeds.add(neighbor);
           }
         } else if(!noise.remove(neighbor)){
-          //System.out.println("Already processed but not noise"+neighbor);
           continue;
         }
         currentCluster.add(neighbor);
@@ -181,9 +205,19 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
 
     protected ModifiableDBIDs getCombinedNeighborhoodCandidates(DBIDRef point){
       ModifiableDBIDs neighboorhoodCandidates = getNeighborhoodCandidates(0, point);
+      if(neighboorhoodCandidates.size() < minpts) {
+        return DBIDUtil.newArray();
+      }
       if (nRefPoints > 0) {
         for (int i = 1; i < nRefPoints; i++) {
-          DBIDUtil.intersection(neighboorhoodCandidates, getNeighborhoodCandidates(i, point));
+          ModifiableDBIDs nextNeighboorhoodCandidates = getNeighborhoodCandidates(i, point);
+          if (nextNeighboorhoodCandidates.size() < minpts) {
+            return DBIDUtil.newArray();
+          }
+          neighboorhoodCandidates = DBIDUtil.intersection(neighboorhoodCandidates, nextNeighboorhoodCandidates);
+          if (neighboorhoodCandidates.size() < minpts) {
+            return DBIDUtil.newArray();
+          }
         }
       }
       return neighboorhoodCandidates;
@@ -192,31 +226,28 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
     protected ModifiableDBIDs getNeighbors(DBIDRef point){
       ModifiableDBIDs neighborhoodCandidates = getCombinedNeighborhoodCandidates(point);
       ModifiableDBIDs neighbors = DBIDUtil.newArray();
-      for(DBIDIter neighborCandidate = neighborhoodCandidates.iter(); neighborCandidate.valid(); neighborCandidate.advance()){
-        //System.out.print(relation.get(neighborCandidate));
-        //System.out.print(";");
-        if(distanceQuery.distance(point, neighborCandidate) <= epsilon){
-          neighbors.add(neighborCandidate);
+      for(DBIDMIter neighborIter = neighborhoodCandidates.iter(); neighborIter.valid(); neighborIter.advance()){
+        nDistCalcs++;
+        if(distanceQuery.distance(point, neighborIter) <= epsilon){
+          neighbors.add(neighborIter);
         }
       }
-      //System.out.println();
       return neighbors;
     }
 
     protected ModifiableDBIDs getNeighborhoodCandidates(int refPointIndex, DBIDRef point){
       int offset = refDistsOffsetMap[refPointIndex].intValue(point);
-      ModifiableDBIDs forwardCandidates = getForwardCandidates(refPointIndex, offset);
-      ModifiableDBIDs backwardCandidates = getBackwardCandidates(refPointIndex, offset);
-      return DBIDUtil.union(forwardCandidates, backwardCandidates);
-      //TODO actual distance computation
+      ArrayModifiableDBIDs forwardCandidates = getForwardCandidates(refPointIndex, offset);
+      ArrayModifiableDBIDs backwardCandidates = getBackwardCandidates(refPointIndex, offset);
+      forwardCandidates.addDBIDs(backwardCandidates);
+      return forwardCandidates;
     }
 
-    protected ModifiableDBIDs getForwardCandidates(int refPointIndex, int referencePointOffset){
-      ModifiableDBIDs forwardCandidates = DBIDUtil.newHashSet();
+    protected ArrayModifiableDBIDs getForwardCandidates(int refPointIndex, int referencePointOffset){
+      ArrayModifiableDBIDs forwardCandidates = DBIDUtil.newArray();
       double startDist = refDists[refPointIndex].doubleValue(referencePointOffset);
       double forwardThreshold = startDist + epsilon;
       for(DoubleDBIDListIter distIter = refDists[refPointIndex].iter().seek(referencePointOffset); distIter.valid(); distIter.advance()){
-        //TODO actual distance computation
         if(distIter.doubleValue() <= forwardThreshold){
           forwardCandidates.add(distIter);
         }
@@ -224,15 +255,22 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       return forwardCandidates;
     }
 
-    protected ModifiableDBIDs getBackwardCandidates(int refPointIndex, int referencePointOffset){
-      ModifiableDBIDs backwardCandidates = DBIDUtil.newHashSet();
+    protected ArrayModifiableDBIDs getBackwardCandidates(int refPointIndex, int referencePointOffset){
+      ArrayModifiableDBIDs backwardCandidates = DBIDUtil.newArray();
       double startDist = refDists[refPointIndex].doubleValue(referencePointOffset);
       double backwardThreshold = startDist - epsilon;
-      for(DoubleDBIDListIter distIter = refDists[refPointIndex].iter().seek(referencePointOffset); distIter.valid(); distIter.retract()){
-        if(distIter.doubleValue() >= backwardThreshold){
-          backwardCandidates.add(distIter);
+      DBIDVar item = DBIDUtil.newVar();
+      for(int i = 0; i < refDists[refPointIndex].size(); i++){
+        if(refDists[refPointIndex].doubleValue(i) >= backwardThreshold){
+          item = refDists[refPointIndex].assignVar(i, item);
+          backwardCandidates.add(item);
         }
       }
+//      for(DoubleDBIDListIter distIter = refDists[refPointIndex].iter().seek(referencePointOffset); distIter.valid(); distIter.retract()){
+//        if(distIter.doubleValue() >= backwardThreshold){
+//          backwardCandidates.add(distIter);
+//        }
+//      }
       return backwardCandidates;
     }
 
@@ -250,6 +288,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
 
     protected void generateSortedReferenceDistances(int index, DBIDRef refPoint, Relation<O> relation){
       for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()){
+        nDistCalcs++;
         double dist = distanceQuery.distance(iditer, refPoint);
         refDists[index].add(dist, iditer);
       }
@@ -262,9 +301,50 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       }
     }
 
+    protected void generateQuantilRefPoints(Relation<O> relation){
+      DBIDVar startRefPoint = DBIDUtil.newVar();
+      DBIDUtil.randomSample(relation.getDBIDs(), 1, new Random()).pop(startRefPoint);
+      generateSortedReferenceDistances(0,startRefPoint, relation);
+      generateOffsetMap(0);
+
+      DBIDVar nextRefPoint = DBIDUtil.newVar();
+      for(int i=1; i<nRefPoints; i++){
+        int qunatilIndex = (int) Math.floor(refDists[i-1].size() * 0.75);
+        refDists[i-1].assignVar(qunatilIndex, nextRefPoint);
+        generateSortedReferenceDistances(i, nextRefPoint, relation);
+        generateOffsetMap(i);
+      }
+    }
+
+    protected void generateRandomRefPoints(Relation<O> relation){
+      ModifiableDBIDs refPoints = DBIDUtil.randomSample(relation.getDBIDs(), nRefPoints, 55);
+      DBIDVar refPoint = DBIDUtil.newVar();
+      for(int i=0; i < nRefPoints; i++){
+        refPoints.pop(refPoint);
+        generateSortedReferenceDistances(i, refPoint, relation);
+        generateOffsetMap(i);
+      }
+    }
+
+    protected void generateKMPPRefPoints(Relation<O> relation){
+      KMeansPlusPlus kpp = new KMeansPlusPlus<Model>(new RandomFactory(55));
+      DBIDs refPoints = kpp.chooseInitialMedoids(nRefPoints, relation.getDBIDs(), distanceQuery);
+      int i = 0;
+      for(DBIDIter iter = refPoints.iter(); iter.valid(); iter.advance()){
+        generateSortedReferenceDistances(i, iter, relation);
+        generateOffsetMap(i);
+        i++;
+      }
+    }
+
   }
 
 
+  /**
+   * Parameterization class.
+   *
+   * @author Felix Krause
+   */
   public static class Par<O> implements Parameterizer {
     /**
      * Parameter to specify the maximum radius of the neighborhood to be
@@ -284,6 +364,8 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
      */
     public static final OptionID NREFPOINTS_ID = new OptionID("tbadbscan.nRefPoints", "The number of reference points to use for clustering.");
 
+    public static final OptionID MODE_ID = new OptionID("tbadbscan.refPointMode", "The mode of which the refpoints are chosen.");
+
     /**
      * Holds the epsilon radius threshold.
      */
@@ -298,6 +380,8 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
      * Holds the number of reference points.
      */
     protected int nRefPoints;
+
+    protected RefPointMode mode;
 
     /**
      * The distance function to use.
@@ -319,11 +403,13 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       new IntParameter(NREFPOINTS_ID) //
           .addConstraint(CommonConstraints.GREATER_EQUAL_ONE_INT)
           .grab(config, x -> nRefPoints = x);
+      new EnumParameter<>(MODE_ID, RefPointMode.class, RefPointMode.RANDOM) //
+          .grab(config, x -> mode = x);
     }
 
     @Override
     public TBADBSCAN<O> make() {
-      return new TBADBSCAN<>(distance, epsilon, minpts, nRefPoints);
+      return new TBADBSCAN<>(distance, epsilon, minpts, nRefPoints, mode);
     }
   }
 }

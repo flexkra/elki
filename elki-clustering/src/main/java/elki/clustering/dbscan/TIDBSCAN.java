@@ -101,7 +101,7 @@ public class TIDBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
 
     // Run TI-DBSCAN instance
     Instance tidbscan = new Instance();
-    tidbscan.run(relation, new QueryBuilder<>(relation, distance).rangeByDBID(epsilon));
+    tidbscan.run(relation);
 
     // Some information about the clustering
 
@@ -162,9 +162,11 @@ public class TIDBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
      */
     protected int refDistOffset = -1;
 
+    protected long distanceComp = 0;
 
 
-    protected void run(Relation<O> relation, RangeSearcher<DBIDRef> rangeSearcher) {
+
+    protected void run(Relation<O> relation) {
       // TEST
       distanceQuery = distance.instantiate(relation);
 
@@ -205,6 +207,7 @@ public class TIDBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       // Finish progress logging
       LOG.ensureCompleted(objprog);
       LOG.setCompleted(clusprog);
+      LOG.warning(String.format("%s", distanceComp));
     }
 
     protected void tiExpandCluster(DBIDRef startObjectID, Relation<O> relation) {
@@ -247,6 +250,7 @@ public class TIDBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
             seeds.add(neighbor);
           }
         } else if(!noise.remove(neighbor)){
+          System.out.println("Already processed but not noise"+neighbor);
           continue;
         }
         currentCluster.add(neighbor);
@@ -276,6 +280,7 @@ public class TIDBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           if(iter.doubleValue() < backwardThreshold){
             break;
           }
+          distanceComp++;
           if(distanceQuery.distance(iter, point) <= epsilon){
             backwardSet.add(iter);
           }
@@ -301,6 +306,7 @@ public class TIDBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           if(iter.doubleValue() > forwardThreshold){
             break;
           }
+          distanceComp++;
           if (distanceQuery.distance(iter, point) <= epsilon){
             forwardSet.add(iter);
           }
@@ -334,6 +340,7 @@ public class TIDBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           if(iter.doubleValue() < backwardThreshold){
             break;
           }
+          distanceComp++;
           if(distanceQuery.distance(iter, point) <= epsilon){
             backwardSet.add(iter);
           }
@@ -359,6 +366,7 @@ public class TIDBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           if(iter.doubleValue() > forwardThreshold){
             break;
           }
+          distanceComp++;
           if (distanceQuery.distance(iter, point) <= epsilon){
             forwardSet.add(iter);
           }

@@ -17,6 +17,7 @@ public class TBADBSCANTest extends AbstractClusterAlgorithmTest {
         .with(TBADBSCAN.Par.EPSILON_ID, 0.04) //
         .with(TBADBSCAN.Par.MINPTS_ID, 20) //
         .with(TBADBSCAN.Par.NREFPOINTS_ID, 4) //
+        .with(TBADBSCAN.Par.MODE_ID, TBADBSCAN.RefPointMode.KPP) //
         .build().autorun(db);
     assertFMeasure(db, result, 0.996413);
     assertClusterSizes(result, new int[] { 29, 50, 101, 150 });
