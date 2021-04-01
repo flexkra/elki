@@ -44,7 +44,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
     KPP,
     QUANTIL,
   }
-  protected RefPointMode refPointMode;
+  protected RefPointMode refPointMode = RefPointMode.KPP;
 
   public TBADBSCAN(Distance<? super O> distance, double epsilon, int minpts, int nRefPoints, RefPointMode mode){
     super();
@@ -134,6 +134,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           generateQuantilRefPoints(relation);
           break;
       }
+      LOG.warning("Ref Mode: "+refPointMode);
       LOG.warning("Ref Dist Calcs"+nDistCalcs);
 
       long clustStart = System.currentTimeMillis();
@@ -154,8 +155,8 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
         }
       }
       long clustTime = System.currentTimeMillis() - clustStart;
-      LOG.warning("Ref Calc "+clustTime+"ms");
-      LOG.warning("Distance Calculations"+nDistCalcs);
+      LOG.warning("Ref Calc "+clustTime+" ms");
+      LOG.warning("Distance Calculations "+nDistCalcs);
       // Finish progress logging
       LOG.ensureCompleted(objprog);
       LOG.setCompleted(clusprog);
@@ -317,7 +318,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
     }
 
     protected void generateRandomRefPoints(Relation<O> relation){
-      ModifiableDBIDs refPoints = DBIDUtil.randomSample(relation.getDBIDs(), nRefPoints, 55);
+      ModifiableDBIDs refPoints = DBIDUtil.randomSample(relation.getDBIDs(), nRefPoints, new Random());
       DBIDVar refPoint = DBIDUtil.newVar();
       for(int i=0; i < nRefPoints; i++){
         refPoints.pop(refPoint);
@@ -364,6 +365,9 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
      */
     public static final OptionID NREFPOINTS_ID = new OptionID("tbadbscan.nRefPoints", "The number of reference points to use for clustering.");
 
+    /**
+     *
+     */
     public static final OptionID MODE_ID = new OptionID("tbadbscan.refPointMode", "The mode of which the refpoints are chosen.");
 
     /**
@@ -381,7 +385,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
      */
     protected int nRefPoints;
 
-    protected RefPointMode mode;
+    protected RefPointMode mode = RefPointMode.KPP;
 
     /**
      * The distance function to use.
@@ -403,7 +407,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       new IntParameter(NREFPOINTS_ID) //
           .addConstraint(CommonConstraints.GREATER_EQUAL_ONE_INT)
           .grab(config, x -> nRefPoints = x);
-      new EnumParameter<>(MODE_ID, RefPointMode.class, RefPointMode.RANDOM) //
+      new EnumParameter<RefPointMode>(MODE_ID, RefPointMode.class, RefPointMode.KPP) //
           .grab(config, x -> mode = x);
     }
 
