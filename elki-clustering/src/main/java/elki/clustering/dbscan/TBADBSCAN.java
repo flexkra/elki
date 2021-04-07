@@ -249,9 +249,10 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       double startDist = refDists[refPointIndex].doubleValue(referencePointOffset);
       double forwardThreshold = startDist + epsilon;
       for(DoubleDBIDListIter distIter = refDists[refPointIndex].iter().seek(referencePointOffset); distIter.valid(); distIter.advance()){
-        if(distIter.doubleValue() <= forwardThreshold){
-          forwardCandidates.add(distIter);
+        if(distIter.doubleValue() > forwardThreshold){
+          break;
         }
+        forwardCandidates.add(distIter);
       }
       return forwardCandidates;
     }
@@ -260,19 +261,38 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       ArrayModifiableDBIDs backwardCandidates = DBIDUtil.newArray();
       double startDist = refDists[refPointIndex].doubleValue(referencePointOffset);
       double backwardThreshold = startDist - epsilon;
-      DBIDVar item = DBIDUtil.newVar();
-      for(int i = 0; i < refDists[refPointIndex].size(); i++){
-        if(refDists[refPointIndex].doubleValue(i) >= backwardThreshold){
-          item = refDists[refPointIndex].assignVar(i, item);
-          backwardCandidates.add(item);
+      for(DoubleDBIDListIter distIter = refDists[refPointIndex].iter().seek(referencePointOffset); distIter.valid(); distIter.retract()){
+        if(distIter.doubleValue() < backwardThreshold){
+          break;
         }
+        backwardCandidates.add(distIter);
       }
-//      for(DoubleDBIDListIter distIter = refDists[refPointIndex].iter().seek(referencePointOffset); distIter.valid(); distIter.retract()){
-//        if(distIter.doubleValue() >= backwardThreshold){
-//          backwardCandidates.add(distIter);
-//        }
-//      }
       return backwardCandidates;
+    }
+
+    protected ArrayModifiableDBIDs getBackForwardCandidates(int refPointIndex, int referencePointOffset){
+      ArrayModifiableDBIDs neighborCandidates = DBIDUtil.newArray();
+      double startDistance = refDists[refPointIndex].doubleValue(referencePointOffset);
+      double backwardThreshold = startDistance - epsilon;
+      double forwardThreshold = startDistance + epsilon;
+      int candidatesFirstIndex = -1;
+      int candidatesLastIndex = -1;
+      DoubleDBIDListIter candidatesListIter = refDists[refPointIndex].iter();
+      for(candidatesListIter.seek(referencePointOffset); candidatesListIter.valid(); candidatesListIter.retract()){
+        if(candidatesListIter.doubleValue() < backwardThreshold){
+          candidatesFirstIndex = candidatesListIter.getOffset() + 1;
+          break;
+        }
+        neighborCandidates.add(candidatesListIter);
+      }
+      for(candidatesListIter.seek(referencePointOffset); candidatesListIter.valid(); candidatesListIter.advance()){
+        if(candidatesListIter.doubleValue() > forwardThreshold){
+          candidatesLastIndex = candidatesListIter.getOffset() - 1;
+          break;
+        }
+        neighborCandidates.add(candidatesListIter);
+      }
+      return neighborCandidates;
     }
 
     protected void getNoiseFromRefDist(int refDistIndex){
