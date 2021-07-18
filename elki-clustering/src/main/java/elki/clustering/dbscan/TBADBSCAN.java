@@ -12,9 +12,7 @@ import elki.data.type.TypeInformation;
 import elki.data.type.TypeUtil;
 import elki.database.datastore.memory.MapIntegerDBIDIntegerStore;
 import elki.database.ids.*;
-import elki.database.query.QueryBuilder;
 import elki.database.query.distance.DistanceQuery;
-import elki.database.query.range.RangeSearcher;
 import elki.database.relation.Relation;
 import elki.distance.Distance;
 import elki.distance.minkowski.EuclideanDistance;
@@ -97,21 +95,15 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
     protected FiniteProgress objprog;
     protected IndefiniteProgress clusprog;
     protected DistanceQuery<? super O> distanceQuery;
-    protected RangeSearcher<DBIDRef> rangeSearcher;
     protected ModifiableDoubleDBIDList[] refDists;
     protected MapIntegerDBIDIntegerStore[] refDistsOffsetMap;
     protected long nDistCalcs;
-
-
-
-    // ALGORITHM
 
     protected void run(Relation<O> relation){
       final int size = relation.size();
       this.objprog = LOG.isVerbose() ? new FiniteProgress("Processing objects", size, LOG) : null;
       this.clusprog = LOG.isVerbose() ? new IndefiniteProgress("Number of clusters", LOG) : null;
       this.distanceQuery = distance.instantiate(relation);
-      this.rangeSearcher = new QueryBuilder<>(relation, distance).rangeByDBID(epsilon);
 
       // Instantiate necessary objects
       resultList = new ArrayList<>();
@@ -119,7 +111,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       processedIDs = DBIDUtil.newHashSet(size);
       nDistCalcs = 0;
 
-      //RefDistances
+      // Instatiate reference point lists
       refDists = new ModifiableDoubleDBIDList[nRefPoints];
       refDistsOffsetMap = new MapIntegerDBIDIntegerStore[nRefPoints];
       for(int i=0; i<nRefPoints; i++){
@@ -127,7 +119,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
         refDistsOffsetMap[i] = new MapIntegerDBIDIntegerStore(relation.size());
       }
 
-      // Calc ref points
+      // Calculate reference points with selected mode
       switch (refPointMode){
         case KPP:
           generateKMPPRefPoints(relation);
@@ -160,8 +152,9 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           break;
         }
       }
-      LOG.statistics(new LongStatistic(TBADBSCAN.class.getName() + ".distance-computations", nDistCalcs));
+
       // Finish progress logging
+      LOG.statistics(new LongStatistic(TBADBSCAN.class.getName() + ".distance-computations", nDistCalcs));
       LOG.ensureCompleted(objprog);
       LOG.setCompleted(clusprog);
     }
@@ -213,6 +206,10 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
 
     protected ModifiableDBIDs getNeighbors(DBIDRef point){
       ModifiableDBIDs neighborhoodCandidates = DBIDUtil.newArray();
+
+      // Rangequery for neighbors
+      // OLD: used mode for thesis
+      // NEW: "improved" version (no actual benefit)
       switch (neighborSearchMode){
         case NEW:
           neighborhoodCandidates = getNeighborhoodCandidatesNew(point);
@@ -222,6 +219,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
           break;
       }
 
+      // Check neighborcandidates if eps-neighborhood is satisfied
       ModifiableDBIDs neighbors = DBIDUtil.newArray();
       for(DBIDMIter neighborIter = neighborhoodCandidates.iter(); neighborIter.valid(); neighborIter.advance()){
         nDistCalcs++;
@@ -232,19 +230,30 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       return neighbors;
     }
 
-    // OLD START
+
+
+
+    // OLD NEIGHBORHOOD SEARCH START
+
     protected ModifiableDBIDs getCombinedNeighborhoodCandidates(DBIDRef point){
       ModifiableDBIDs neighboorhoodCandidates = getNeighborhoodCandidates(0, point);
+
+      // if requested neighborhood does not satisfy core point requirements stop
       if(neighboorhoodCandidates.size() < minpts) {
         return DBIDUtil.newArray();
       }
+
+      // intersection of all neighborhood candidates
       if (nRefPoints > 0) {
         for (int i = 1; i < nRefPoints; i++) {
           ModifiableDBIDs nextNeighboorhoodCandidates = getNeighborhoodCandidates(i, point);
+          // if requested neighborhood does not satisfy core point requirements stop
           if (nextNeighboorhoodCandidates.size() < minpts) {
             return DBIDUtil.newArray();
           }
+
           neighboorhoodCandidates = DBIDUtil.intersection(neighboorhoodCandidates, nextNeighboorhoodCandidates);
+          // if requested neighborhood does not satisfy core point requirements stop
           if (neighboorhoodCandidates.size() < minpts) {
             return DBIDUtil.newArray();
           }
@@ -252,6 +261,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       }
       return neighboorhoodCandidates;
     }
+
 
     protected ModifiableDBIDs getNeighborhoodCandidates(int refPointIndex, DBIDRef point){
       int offset = refDistsOffsetMap[refPointIndex].intValue(point);
@@ -287,7 +297,81 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       return backwardCandidates;
     }
 
-    // OLD END
+    // OLD NEIGHBORHOOD SEARCH END
+
+    // REFPOINTS FINDING START
+
+    protected void generateSortedReferenceDistances(int index, DBIDRef refPoint, Relation<O> relation){
+      // get distance from reference point to every other point
+      for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()){
+        nDistCalcs++;
+        double dist = distanceQuery.distance(iditer, refPoint);
+        refDists[index].add(dist, iditer);
+      }
+      refDists[index].sort();
+    }
+
+    // generate map to find index of requested point faster
+    protected void generateOffsetMap(int index){
+      for(DoubleDBIDListIter idIter = refDists[index].iter(); idIter.valid(); idIter.advance()){
+        refDistsOffsetMap[index].putInt(idIter, idIter.getOffset());
+      }
+    }
+
+    protected void generateQuantilRefPoints(Relation<O> relation){
+      DBIDVar startRefPoint = DBIDUtil.newVar();
+      DBIDUtil.randomSample(relation.getDBIDs(), 1, new Random()).pop(startRefPoint);
+      generateSortedReferenceDistances(0,startRefPoint, relation);
+      generateOffsetMap(0);
+
+      DBIDVar nextRefPoint = DBIDUtil.newVar();
+      for(int i=1; i<nRefPoints; i++){
+        int qunatilIndex = (int) Math.floor(refDists[i-1].size() * 0.75);
+        refDists[i-1].assignVar(qunatilIndex, nextRefPoint);
+        generateSortedReferenceDistances(i, nextRefPoint, relation);
+        generateOffsetMap(i);
+      }
+    }
+
+    protected void generateRandomRefPoints(Relation<O> relation){
+      ModifiableDBIDs refPoints = DBIDUtil.randomSample(relation.getDBIDs(), nRefPoints, new Random());
+      DBIDVar refPoint = DBIDUtil.newVar();
+      for(int i=0; i < nRefPoints; i++){
+        refPoints.pop(refPoint);
+        generateSortedReferenceDistances(i, refPoint, relation);
+        generateOffsetMap(i);
+      }
+    }
+
+    protected void generateKMPPRefPoints(Relation<O> relation){
+      KMeansPlusPlus kpp = new KMeansPlusPlus<Model>(new RandomFactory(new Random().nextInt()));
+      DBIDs refPoints = kpp.chooseInitialMedoids(nRefPoints, relation.getDBIDs(), distanceQuery);
+      int i = 0;
+      for(DBIDIter iter = refPoints.iter(); iter.valid(); iter.advance()){
+        generateSortedReferenceDistances(i, iter, relation);
+        generateOffsetMap(i);
+        i++;
+      }
+    }
+
+    protected void generatePAMRefPoints(Relation<O> relation){
+      DBIDs pamInit = new BUILD().chooseInitialMedoids(nRefPoints, relation.getDBIDs(), distanceQuery);
+      int i = 0;
+      for(DBIDIter iter = pamInit.iter(); iter.valid(); iter.advance()){
+        generateSortedReferenceDistances(i, iter, relation);
+        generateOffsetMap(i);
+        i++;
+      }
+    }
+    // REFPOINT FINDING END
+
+
+
+
+
+
+
+
 
     // NEW START
 
@@ -322,10 +406,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       if(neighborhoodSize[neighborhoodSizeIndex[0]] < minpts){
         return DBIDUtil.newHashSet(0);
       }
-      //ArrayModifiableDBIDs neighborhoodCandidates = DBIDUtil.newArray(neighborhoodSize[neighborhoodSizeIndex[0]]);
       HashSetModifiableDBIDs neighborhoodCandidates =  DBIDUtil.newHashSet(neighborhoodSize[neighborhoodSizeIndex[0]]);
-      //Intersect all neighborhood candidates starting by smallest neighboorhood range
-      //stop if finished or smaller than minpts
       int neighborhoodIndex = neighborhoodSizeIndex[0];
       int upperbound = bounds[neighborhoodIndex*2+1];
       int lowerbound = bounds[neighborhoodIndex*2];
@@ -425,261 +506,7 @@ public class TBADBSCAN<O> implements ClusteringAlgorithm<Clustering<Model>> {
       return iter.getOffset();
     }
 
-    protected int binaryBackwardSearchNew(int refPointIndex, int refPointOffset){
-      double startDistance = refDists[refPointIndex].doubleValue(refPointOffset);
-      double backwardThreshold = startDistance - epsilon;
-      if(refPointOffset >0 && refDists[refPointIndex].doubleValue(refPointOffset - 1) < backwardThreshold){
-        return refPointOffset;
-      }
-      int currentIndex = Math.max(refPointOffset - minpts, 0);
-      while (currentIndex > 0 && refDists[refPointIndex].doubleValue(currentIndex) >= backwardThreshold){
-        currentIndex = Math.max(currentIndex - minpts, 0);
-      }
-      if (currentIndex == 0){
-        return 0;
-      }
-      return stupidSearch(refPointIndex, backwardThreshold, false, currentIndex, currentIndex + minpts);
-    }
-
-    protected int binaryForwardSearchNew(int refPointIndex, int refPointOffset){
-      final int maxrefDistIndex = refDists[refPointIndex].size() - 1;
-      double startDistance = refDists[refPointIndex].doubleValue(refPointOffset);
-      double forwardThreshold = startDistance + epsilon;
-      if(refPointOffset > 0 && refDists[refPointIndex].doubleValue(refPointOffset - 1) > forwardThreshold){
-        return refPointOffset;
-      }
-      int currentIndex = Math.min(refPointOffset + minpts, maxrefDistIndex);
-      while (currentIndex < maxrefDistIndex && refDists[refPointIndex].doubleValue(currentIndex) <= forwardThreshold){
-        currentIndex = Math.min(currentIndex + minpts, maxrefDistIndex);
-      }
-      if (currentIndex == maxrefDistIndex){
-        return maxrefDistIndex;
-      }
-      return stupidSearch(refPointIndex, forwardThreshold, true, currentIndex - minpts, currentIndex);
-    }
-
-    protected int binaryThresholdSearch(int refPointIndex, int refPointOffset, double threshold, boolean isUpperThreshold){
-      int low = -1;
-      int high = -1;
-      ModifiableDoubleDBIDList arr = refDists[refPointIndex];
-
-      if (isUpperThreshold){
-        low = refPointOffset;
-        high = arr.size() - 1;
-      } else {
-        low = 0;
-        high = refPointOffset;
-      }
-
-      while (low < high) {
-        int mid = (low + high) / 2;
-
-        if (arr.doubleValue(mid) == threshold){
-          return mid;
-        } else if (arr.doubleValue(mid) < threshold && mid != low) {
-          low = mid;
-        } else if (arr.doubleValue(mid) > threshold && mid != high) {
-          high = mid;
-        } else {
-          if (isUpperThreshold) {
-            high = low = low + 1;
-          } else {
-            high = low;
-          }
-        }
-      }
-
-      return low - 1;
-    }
-
-    protected int stupidSearch(int refDistIndex, double threshold, boolean isUpperThreshold, int start, int end){
-      assert start < end;
-      if(isUpperThreshold){
-        while (start <= end){
-          double dist = refDists[refDistIndex].doubleValue(start);
-          if(dist <= threshold) {
-            start++;
-          } else {
-            return start - 1;
-          }
-        }
-        return start;
-      } else {
-        while (end >= start){
-          if(refDists[refDistIndex].doubleValue(end) >= threshold) {
-            end--;
-          } else {
-            return end + 1;
-          }
-        }
-        return end;
-      }
-    }
-
     // NEW END
-
-    // REFPOINTS FINDING START
-
-    protected void generateSortedReferenceDistances(int index, DBIDRef refPoint, Relation<O> relation){
-      for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()){
-        nDistCalcs++;
-        double dist = distanceQuery.distance(iditer, refPoint);
-        refDists[index].add(dist, iditer);
-      }
-      refDists[index].sort();
-    }
-
-    protected void generateOffsetMap(int index){
-      for(DoubleDBIDListIter idIter = refDists[index].iter(); idIter.valid(); idIter.advance()){
-        refDistsOffsetMap[index].putInt(idIter, idIter.getOffset());
-      }
-    }
-
-    protected void generateQuantilRefPoints(Relation<O> relation){
-      DBIDVar startRefPoint = DBIDUtil.newVar();
-      DBIDUtil.randomSample(relation.getDBIDs(), 1, new Random()).pop(startRefPoint);
-      generateSortedReferenceDistances(0,startRefPoint, relation);
-      generateOffsetMap(0);
-
-      DBIDVar nextRefPoint = DBIDUtil.newVar();
-      for(int i=1; i<nRefPoints; i++){
-        int qunatilIndex = (int) Math.floor(refDists[i-1].size() * 0.75);
-        refDists[i-1].assignVar(qunatilIndex, nextRefPoint);
-        generateSortedReferenceDistances(i, nextRefPoint, relation);
-        generateOffsetMap(i);
-      }
-    }
-
-    protected void generateRandomRefPoints(Relation<O> relation){
-      ModifiableDBIDs refPoints = DBIDUtil.randomSample(relation.getDBIDs(), nRefPoints, new Random());
-      DBIDVar refPoint = DBIDUtil.newVar();
-      for(int i=0; i < nRefPoints; i++){
-        refPoints.pop(refPoint);
-        generateSortedReferenceDistances(i, refPoint, relation);
-        generateOffsetMap(i);
-      }
-    }
-
-    protected void generateKMPPRefPoints(Relation<O> relation){
-      KMeansPlusPlus kpp = new KMeansPlusPlus<Model>(new RandomFactory(new Random().nextInt()));
-      DBIDs refPoints = kpp.chooseInitialMedoids(nRefPoints, relation.getDBIDs(), distanceQuery);
-      int i = 0;
-      for(DBIDIter iter = refPoints.iter(); iter.valid(); iter.advance()){
-        generateSortedReferenceDistances(i, iter, relation);
-        generateOffsetMap(i);
-        i++;
-      }
-    }
-
-    protected void generatePAMRefPoints(Relation<O> relation){
-      DBIDs pamInit = new BUILD().chooseInitialMedoids(nRefPoints, relation.getDBIDs(), distanceQuery);
-      int i = 0;
-      for(DBIDIter iter = pamInit.iter(); iter.valid(); iter.advance()){
-        generateSortedReferenceDistances(i, iter, relation);
-        generateOffsetMap(i);
-        i++;
-      }
-    }
-
-    // REFPOINT FINDING END
-
-    // TEST METHODS
-
-    protected int binaryBackwardSearch(int refPointIndex, int refPointOffset){
-      double startDistance = refDists[refPointIndex].doubleValue(refPointOffset);
-      double backwardThreshold = startDistance - epsilon;
-      //Stop if next point is already out of threshold
-      if(refPointOffset >0 && refDists[refPointIndex].doubleValue(refPointOffset - 1) < backwardThreshold){
-        return refPointOffset;
-      }
-      int l = 0;
-      int r = refPointOffset;
-      int m = -1;
-      while(l <= r){
-        m = l + ((r - l) / 2);
-        double midValue = refDists[refPointIndex].doubleValue(m);
-        if(midValue == backwardThreshold){
-          return m;
-        } else {
-          if(midValue > backwardThreshold){
-            r = m - 1;
-          } else {
-            l = m + 1;
-          }
-        }
-      }
-      return m;
-    }
-
-    protected int binaryForwardSearch(int refPointIndex, int refPointOffset){
-      double startDistance = refDists[refPointIndex].doubleValue(refPointOffset);
-      double forwardThreshold = startDistance + epsilon;
-      int l = refPointOffset;
-      int r = refDists[refPointIndex].size() - 1;
-      int m = -1;
-      double midValue = -1;
-      while(l <= r){
-        m = l + ((r - l) / 2);
-        midValue = refDists[refPointIndex].doubleValue(m);
-        if(midValue == forwardThreshold){
-          return m;
-        } else {
-          if(midValue > forwardThreshold){
-            r = m - 1;
-          } else {
-            l = m + 1;
-          }
-        }
-      }
-      return m;
-    }
-
-    protected int binaryThresholdSearch(int refDistIndex, double threshold, boolean isUpperThreshold, int start, int end){
-      int m = (start + end) / 2;
-      if (end <= start){
-        if(isUpperThreshold){
-          // It's stupid but it works for now
-          if (refDists[refDistIndex].doubleValue(start + 1) <= threshold){
-            assert refDists[refDistIndex].doubleValue(start+2) > threshold;
-            return start + 1;
-          } else if (refDists[refDistIndex].doubleValue(start) <= threshold){
-            return start;
-          } else {
-            assert refDists[refDistIndex].doubleValue(start-2) <= threshold;
-            return start - 1;
-          }
-        } else {
-          if (refDists[refDistIndex].doubleValue(end - 1) >= threshold){
-            assert refDists[refDistIndex].doubleValue(end-2) < threshold;
-            return end - 1;
-          } else if (refDists[refDistIndex].doubleValue(end) >= threshold){
-            return end;
-          } else {
-            assert refDists[refDistIndex].doubleValue(end+2) >= threshold;
-            return end + 1;
-          }
-        }
-      }
-      if (refDists[refDistIndex].doubleValue(m) < threshold){
-        return binaryThresholdSearch(refDistIndex, threshold, isUpperThreshold, m + 1, end);
-      } else {
-        return binaryThresholdSearch(refDistIndex, threshold, isUpperThreshold, start, m - 1);
-      }
-    }
-
-    protected void getNoiseFromRefDist(int refDistIndex){
-      for(int i=0; i<refDists[refDistIndex].size(); i++){
-        DBIDVar point = DBIDUtil.newVar();
-        refDists[refDistIndex].assignVar(i, point);
-        ModifiableDBIDs neighborhoodCandidates = getNeighborhoodCandidates(refDistIndex, point);
-        if(neighborhoodCandidates.size() < minpts){
-          processedIDs.add(point);
-          noise.add(point);
-        }
-      }
-    }
-
-
   }
 
 
