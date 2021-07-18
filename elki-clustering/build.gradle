@@ -1,6 +1,7 @@
 description = 'ELKI - Clustering Algorithms'
 dependencies {
-  compile project(':elki-core')
+  implementation 'org.junit.jupiter:junit-jupiter:5.4.2'
+    compile project(':elki-core')
   // compile project(':elki-precomputed') // For distance matrixes
   // via core: compile project(':elki-index-preprocessed') // For SNN clustering
   // compile project(':elki-index-rtree')
